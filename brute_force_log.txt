@@ -1,0 +1,15 @@
+URL: http://smaxaverius1.sch.id
+Username: biting60
+Maksimum kombinasi yang akan dicoba: 10000
+
+Brute Force Log:
+URL: http://smaxaverius1.sch.id
+Username: biting60
+Maksimum kombinasi yang akan dicoba: 1000
+
+Brute Force Log:
+URL: http://smaxaverius.sch.id
+Username: biting60
+Maksimum kombinasi yang akan dicoba: 1000
+
+Brute Force Log:

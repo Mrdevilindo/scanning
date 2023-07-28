@@ -1,0 +1,8 @@
+pythons = new
+requests = requests
+colorama = colorama
+selenium = selenium
+tabulate = tabulate
+termcolor = termcolor
+tqdm = tqdm
+
