@@ -5,6 +5,7 @@ import requests
 from colorama import init, Fore, Style
 import subprocess
 import datetime
+import urllib.parse
 
 def show_banner(url, wordlist_file):
     # Use Figlet to create the ASCII art banner
@@ -20,19 +21,22 @@ def show_banner(url, wordlist_file):
 
 def check_xss_vulnerability(url, payload, allow_redirects=True):
     try:
-        response = requests.get(url + payload, allow_redirects=allow_redirects)
+        # Encode the payload before appending it to the URL
+        encoded_payload = urllib.parse.quote(payload)
+
+        response = requests.get(url + encoded_payload, allow_redirects=allow_redirects)
 
         if response.ok:
             if "<script>" in response.text:
                 return True
         else:
-            print(Fore.RED + f"Error occurred while checking URL '{url + payload}': Status Code {response.status_code}")
+            print(Fore.RED + f"Error occurred while checking URL '{url + encoded_payload}': Status Code {response.status_code}")
             return False
 
     except requests.exceptions.RequestException as e:
-        print(Fore.RED + f"Error occurred while checking URL '{url + payload}': {e}")
+        print(Fore.RED + f"Error occurred while checking URL '{url + encoded_payload}': {e}")
         return False
-
+    
 async def scan_url(url, payloads, allow_redirects):
     return [await asyncio.to_thread(check_xss_vulnerability, url, payload, allow_redirects) for payload in payloads]
 
